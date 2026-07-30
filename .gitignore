@@ -9,3 +9,5 @@ data/*
 
 .vscode/
 .idea/
+
+tests/
