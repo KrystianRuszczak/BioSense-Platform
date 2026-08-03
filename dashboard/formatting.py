@@ -4,10 +4,10 @@ from datetime import datetime
 
 from collector.live_store import live_telemetry_snapshot
 from collector.live_health import LiveDeviceState, evaluate_live_health
-from shared.protocol import UiFlag
+from shared.protocol import UiFlag, UI_EVENT_MARKER
 
 EVENT_NAMES = {
-    1: "Marker",
+    UI_EVENT_MARKER: "M",
     2: "Session toggle",
     3: "Mute toggle",
     4: "Measurement reset",

@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from collector.csv_writer import SessionCsvWriter
 from collector.live_store import LiveTelemetryStore
 from collector.session_manager import SessionAction, SessionInfo, SessionManager
-from shared.models import telemetry_message, ecg_batch_message, gsr_batch_message
+from shared.models import telemetry_message, ecg_batch_message, gsr_batch_message, event_message
+from shared.protocol import UI_EVENT_MARKER
 
 LOGGER = logging.getLogger(__name__)
 
@@ -193,6 +194,11 @@ class TelemetryWorker:
 
         self._live_store.update(message)
         update = self._session_manager.process(message)
+        
+        if isinstance(message, event_message) and message.event == UI_EVENT_MARKER:
+            session = self._session_manager.active_session
+            
+            LOGGER.info(f"M received: sample={message.sample}, session={session.session_id if session is not None else "none"}")
 
         # ===========================================TEMP================================
         if update.action is not SessionAction.NONE:

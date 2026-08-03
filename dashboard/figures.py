@@ -1,17 +1,29 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from typing import Literal
 from collections.abc import Callable
 import plotly.graph_objects as go
 
+from shared.protocol import UI_EVENT_MARKER
 from shared.models import metrics_message
 from collector.live_store import live_telemetry_snapshot
 
 SignalKind = Literal["filtered", "raw"]
 MetricValueGetter = Callable[[metrics_message], int | float | None]
 
-def build_gsr_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False,) -> go.Figure:
+def build_gsr_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False, window_s: float | None = None) -> go.Figure:
     samples = snapshot.gsr_samples
+    
+    if window_s is not None:
+        if window_s <= 0:
+            raise ValueError("window_s must be greater than zero")
+        
+        if samples:
+            sample_rate = samples[-1].sample_rate
+            sample_limit = max(1, round(window_s * sample_rate))
+            samples = samples[-sample_limit:]
+    
     figure = go.Figure()
 
     if not samples:
@@ -50,7 +62,7 @@ def build_gsr_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False,)
         )
     else:
         figure.add_trace(
-            go.Scattergl(
+            go.Scatter(
                 x=x_values,
                 y=y_values,
                 mode="lines+markers",
@@ -62,6 +74,8 @@ def build_gsr_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False,)
         )
 
     _configure_gsr_layout(figure)
+    
+    _add_m_markers(figure, snapshot, first_sample=samples[0].sample, latest_sample=latest_sample, device_sample_rate_hz=device_sample_rate_hz)
 
     if is_stale and has_valid_value:
         figure.update_traces(opacity=0.35)
@@ -83,12 +97,21 @@ def build_gsr_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False,)
 
     return figure
 
-
-def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind = "filtered", is_stale: bool = False) -> go.Figure:
+def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind = "filtered", is_stale: bool = False, window_s: float | None = None,) -> go.Figure:
     if signal_kind not in ("filtered", "raw"):
         raise ValueError("signal_kind must be 'filtered' or 'raw'")
 
     samples = snapshot.ecg_samples
+    
+    if window_s is not None:
+        if window_s <= 0:
+            raise ValueError("window_s must be greater than zero")
+        
+        if samples:
+            sample_rate = samples[-1].sample_rate
+            sample_limit = max(1, round(window_s * sample_rate))
+            samples = samples[-sample_limit:]
+    
     figure = go.Figure()
 
     if not samples:
@@ -118,7 +141,7 @@ def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind 
         signal_name = "Raw ECG"
 
     figure.add_trace(
-        go.Scattergl(
+        go.Scatter(
             x=x_values,
             y=y_values,
             mode="lines",
@@ -139,7 +162,7 @@ def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind 
 
     if rpeak_x:
         figure.add_trace(
-            go.Scattergl(
+            go.Scatter(
                 x=rpeak_x,
                 y=rpeak_y,
                 mode="markers",
@@ -155,6 +178,8 @@ def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind 
         )
 
     _configure_ecg_layout(figure=figure, signal_kind=signal_kind)
+    
+    _add_m_markers(figure, snapshot, first_sample=samples[0].sample, latest_sample=latest_sample, device_sample_rate_hz=samples[-1].sample_rate)
 
     if is_stale:
         figure.update_traces(opacity=0.35)
@@ -175,15 +200,18 @@ def build_ecg_figure(snapshot: live_telemetry_snapshot, signal_kind: SignalKind 
 
     return figure
 
-def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis_title: str, value_getter: MetricValueGetter, is_stale: bool = False) -> go.Figure:
+def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis_title: str, value_getter: MetricValueGetter, is_stale: bool = False, window_s: float | None = None) -> go.Figure:
     figure = go.Figure()
+    history = snapshot.metrics_history
 
     x_values: list[object] = []
     y_values: list[int | float | None] = []
 
     has_valid_value = False
+    
+    history = _metrics_history_for_window(snapshot, window_s)
 
-    for message in snapshot.metrics_history:
+    for message in history:
         value = value_getter(message)
 
         x_values.append(message.received_at_utc)
@@ -214,7 +242,7 @@ def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis
         )
     else:
         figure.add_trace(
-            go.Scattergl(
+            go.Scatter(
                 x=x_values,
                 y=y_values,
                 mode="lines+markers",
@@ -224,6 +252,14 @@ def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis
                 hovertemplate=("Time: %{x|%H:%M:%S}<br>Value: %{y}<extra></extra>"),
             ),
         )
+        
+        if history:
+            _add_time_m_markers(
+                figure,
+                snapshot,
+                start_time=history[0].received_at_utc,
+                end_time=history[-1].received_at_utc,
+            )
 
     figure.update_layout(
         margin={
@@ -232,7 +268,7 @@ def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis
             "t":25,
             "b":50
         },
-        height=320,
+        height=360,
         hovermode="x unified",
         showlegend=False,
         uirevision=f"biosense-live-{title}",
@@ -272,6 +308,144 @@ def build_metric_figure(snapshot: live_telemetry_snapshot, *, title: str, y_axis
         )
 
     return figure
+
+def build_temperature_figure(snapshot: live_telemetry_snapshot, is_stale: bool = False, window_s: float | None = None) -> go.Figure:
+    figure = go.Figure()
+    history = _metrics_history_for_window(snapshot, window_s)
+
+    if not history:
+        figure.add_annotation(
+            text="Waiting for temperature data",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font={"size": 17},
+        )
+    else:
+        x_values = [message.received_at_utc for message in history]
+
+        figure.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=[message.temp_obj for message in history],
+                mode="lines+markers",
+                name="Object",
+                marker={"size": 5},
+                hovertemplate=("Time: %{x|%H:%M:%S}<br>Object: %{y:.1f} °C<extra></extra>")
+            )
+        )
+
+        figure.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=[message.temp_amb for message in history],
+                mode="lines+markers",
+                name="Ambient",
+                marker={"size": 5},
+                hovertemplate=("Time: %{x|%H:%M:%S}<br>Ambient: %{y:.1f} °C<extra></extra>")
+            )
+        )
+        
+        if history:
+            _add_time_m_markers(
+                figure,
+                snapshot,
+                start_time=history[0].received_at_utc,
+                end_time=history[-1].received_at_utc
+            )
+
+    figure.update_layout(
+        margin={
+            "l": 60,
+            "r": 20,
+            "t": 25,
+            "b": 50,
+        },
+        height=360,
+        hovermode="x unified",
+        showlegend=True,
+        uirevision=("biosense-live-temperature"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend={
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1.0,
+        },
+        xaxis={
+            "title": "Time",
+            "tickformat": "%H:%M:%S",
+            "showgrid": True,
+            "zeroline": False,
+        },
+        yaxis={
+            "title": "Temperature [°C]",
+            "showgrid": True,
+            "zeroline": False,
+        },
+    )
+
+    if is_stale and history:
+        figure.update_traces(
+            opacity=0.35
+        )
+
+        figure.add_annotation(
+            text="DATA STALE",
+            x=0.5,
+            y=0.5,
+            xref="paper",
+            yref="paper",
+            showarrow=False,
+            font={
+                "size": 18,
+                "color": "#9a3412",
+            },
+            bgcolor=("rgba(255, 237, 213, 0.92)"),
+            bordercolor="#fdba74",
+            borderwidth=1,
+            borderpad=10,
+        )
+
+    return figure
+
+def _add_m_markers(figure: go.Figure, snapshot: live_telemetry_snapshot, *, first_sample: int, latest_sample: int, device_sample_rate_hz: float) -> None:
+    for event in snapshot.events:
+        if event.event != UI_EVENT_MARKER:
+            continue
+        
+        if not first_sample <= event.sample <= latest_sample:
+            continue
+        
+        x_value = (event.sample - latest_sample) / device_sample_rate_hz
+        
+        figure.add_vline(
+            x=x_value,
+            line_dash="dash",
+            line_width=2,
+            annotation_text="M",
+            annotation_position="top right"
+        )
+
+def _add_time_m_markers(figure: go.Figure, snapshot: live_telemetry_snapshot, *, start_time: datetime, end_time: datetime) -> None:
+    for event in snapshot.events:
+        if event.event != UI_EVENT_MARKER:
+            continue
+        
+        if not start_time <= event.received_at_utc <= end_time:
+            continue
+        
+        figure.add_vline(
+            x=event.received_at_utc,
+            line_dash="dash",
+            line_width=2,
+            annotation_text="M",
+            annotation_position="top right"
+        )
 
 def _configure_ecg_layout(figure: go.Figure, signal_kind: SignalKind) -> None:
     title =("Filtered ECG" if signal_kind == "filtered" else "Raw ECG")
@@ -329,3 +503,21 @@ def _configure_gsr_layout(figure: go.Figure,) -> None:
             "zeroline": False,
         },
     )
+    
+def _metrics_history_for_window(snapshot: live_telemetry_snapshot, window_s: float | None) -> tuple[metrics_message, ...]:
+    history = snapshot.metrics_history
+    
+    if window_s is None:
+        return history
+    
+    if window_s <= 0:
+        raise ValueError("window_s must be greater than zero")
+    
+    if not history:
+        return ()
+    
+    end_time = history[-1].received_at_utc
+    
+    cutoff = end_time - timedelta(seconds=window_s)
+    
+    return tuple(message for message in history if message.received_at_utc >= cutoff)

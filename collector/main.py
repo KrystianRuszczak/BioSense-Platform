@@ -21,7 +21,8 @@ DATA_ROOT = ROOT_DIR / "data"
 TELEMETRY_QUEUE_SIZE = 4096
 MQTT_INITIAL_CONNECTION_TIMEOUT_S = 15.0
 HEALTH_CHECK_INTERVAL_S = 0.5
-LIVE_ECG_WINDOW_S = 10.0
+LIVE_ECG_WINDOW_S = 30.0
+LIVE_GSR_WINDOW_S = 300.0
 LIVE_EVENT_LIMIT = 100
 LIVE_METRICS_WINDOW_S = 600.0
 
@@ -46,6 +47,7 @@ def run() -> None:
     live_store = LiveTelemetryStore(
         device_id=cfg.device_id,
         ecg_window_s=LIVE_ECG_WINDOW_S,
+        gsr_window_s=LIVE_GSR_WINDOW_S,
         event_limit=LIVE_EVENT_LIMIT,
         metrics_window_s=LIVE_METRICS_WINDOW_S
     )
