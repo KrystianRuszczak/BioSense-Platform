@@ -168,6 +168,19 @@ class SessionCsvWriter:
     @property
     def gsr_integrity(self) -> gsr_continuity_stats:
         return self._gsr_continuity.stats
+    
+    @property
+    def session_integrity_complete(self) -> bool:
+        ecg_stats = self._ecg_continuity.stats
+        gsr_stats = self._gsr_continuity.stats
+        
+        ecg_boundary = self._session_boundary.stats
+        gsr_boundary = self._gsr_session_boundary.stats
+        
+        ecg_complete = ecg_stats.received_batches > 0 and ecg_stats.is_complete and ecg_boundary.is_complete
+        gsr_complete = gsr_stats.received_batches > 0 and gsr_stats.is_complete and gsr_boundary.is_complete
+        
+        return ecg_complete and gsr_complete
 
     def open(self) -> None:
         if self._is_open:

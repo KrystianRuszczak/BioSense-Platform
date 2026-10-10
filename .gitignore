@@ -10,4 +10,6 @@ data/*
 .vscode/
 .idea/
 
+collector/old_collector.py
+
 tests/

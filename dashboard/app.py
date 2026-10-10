@@ -7,6 +7,7 @@ from dash import ALL, MATCH, Dash, Input, Output, State, dcc, html, ctx, no_upda
 
 from collector.live_store import LiveTelemetryStore, live_telemetry_snapshot
 from collector.live_health import LiveDeviceState, evaluate_live_health
+from collector.live_session_store import LiveSessionStore, LiveSessionState, live_session_snapshot
 from dashboard.figures import SignalKind, build_ecg_figure, build_gsr_figure, build_metric_figure, build_temperature_figure
 from dashboard.formatting import (
     device_status, 
@@ -14,7 +15,10 @@ from dashboard.formatting import (
     format_optional_number, 
     format_timestamp, 
     newest_received_at, 
-    session_status,
+    format_session_duration,
+    format_session_started,
+    live_session_status,
+    live_session_result,
     ecg_sensor_status,
     gsr_sensor_status,
     pulse_sensor_status
@@ -84,7 +88,7 @@ def _gsr_stream_is_stale(snapshot: live_telemetry_snapshot,) -> bool:
 
     return age_s > GSR_STALE_TIMEOUT_S
 
-def create_dashboard_app(live_store: LiveTelemetryStore) -> Dash:
+def create_dashboard_app(live_store: LiveTelemetryStore, session_store: LiveSessionStore) -> Dash:
     assets_dir = (Path(__file__).resolve().parent / "assets")
 
     css_path = assets_dir / "dashboard.css"
@@ -94,14 +98,20 @@ def create_dashboard_app(live_store: LiveTelemetryStore) -> Dash:
 
     app = Dash(__name__, assets_folder=str(assets_dir), title="BioSense Dashboard", update_title="",)
 
-    app.layout = _build_layout(live_store=live_store)
+    app.layout = _build_layout(live_store=live_store, session_store=session_store)
 
-    _register_callbacks(app=app, live_store=live_store)
+    _register_callbacks(app=app, live_store=live_store, session_store=session_store)
 
     return app
 
-def _build_layout(live_store: LiveTelemetryStore,) -> html.Div:
+def _build_layout(live_store: LiveTelemetryStore, session_store: LiveSessionStore) -> html.Div:
     snapshot = live_store.snapshot()
+    
+    session_snapshot = session_store.snapshot()
+    
+    session_text, session_class = live_session_status(session_snapshot)
+    
+    result_text, result_class = live_session_result(session_snapshot)
 
     return html.Div(
             className="dashboard-shell",
@@ -119,6 +129,7 @@ def _build_layout(live_store: LiveTelemetryStore,) -> html.Div:
                             html.Div( className="header-statuses", children=[
                                     _status_group(label="Device", value_id="device-status"),
                                     _status_group(label="Session", value_id="session-status"),
+                                    _battery_status(),
                                 ],
                             )
                         ]
@@ -131,86 +142,134 @@ def _build_layout(live_store: LiveTelemetryStore,) -> html.Div:
                     ]
                 ),
                 html.Section(
-                    className="view-controls",
+                    id="session-summary",
+                    className=_session_summary_class(session_snapshot),
                     children=[
+                        _session_summary_item(
+                            label="Duration",
+                            value_id="session-duration",
+                            value=format_session_duration(session_snapshot),
+                        ),
+                        _session_summary_item(
+                            label="Started",
+                            value_id="session-started",
+                            value=format_session_started(session_snapshot),
+                        ),
+                        _session_summary_item(
+                            label="Last session",
+                            value_id="session-last-result",
+                            value=result_text,
+                            value_class=result_class,
+                            item_id="session-last-result-item",
+                            style=_last_session_item_style(session_snapshot),
+                        ),
+                    ]
+                ),
+                html.Details(
+                    className="view-settings",
+                    children=[
+                        html.Summary(
+                            "View settings",
+                            className="view-settings-summary",
+                        ),
                         html.Div(
+                            className="view-settings-body",
                             children=[
-                                html.H2(
-                                    "Visible panels",
-                                    className="view-controls-title",
-                                ),
                                 html.P(
                                     "Choose telemetry panels to display.",
                                     className="panel-description",
-                                )
+                                ),
+                                dcc.Checklist(
+                                    id="visible-panels",
+                                    options=[
+                                        {
+                                            "label": "Live ECG",
+                                            "value": "ecg",
+                                        },
+                                        {
+                                            "label": "Live GSR",
+                                            "value": "gsr",
+                                        },
+                                        {
+                                            "label": "ECG heart rate",
+                                            "value": "ecg-bpm",
+                                        },
+                                        {
+                                            "label": "Optical heart rate",
+                                            "value": "optical-bpm"
+                                        },
+                                        {
+                                            "label": "SpO₂",
+                                            "value": "spo2"
+                                        },
+                                        {
+                                            "label": "Object temperature",
+                                            "value": "temp-object"
+                                        },
+                                        {
+                                            "label": "Ambient temperature",
+                                            "value": "temp-ambient"
+                                        },
+                                        {
+                                            "label": "Temperature comparison",
+                                            "value": "temperature"
+                                        },
+                                        {
+                                            "label": "Events",
+                                            "value": "events"
+                                        },
+                                    ],
+                                    value=DEFAULT_VISIBLE_PANELS,
+                                    inline=True,
+                                    className="panel-selector",
+                                    persistence=True,
+                                    persistence_type="local"
+                                ),
                             ]
-                        ),
-                        dcc.Checklist(
-                            id="visible-panels",
-                            options=[
-                                {
-                                    "label": "Live ECG",
-                                    "value": "ecg",
-                                },
-                                {
-                                    "label": "Live GSR",
-                                    "value": "gsr",
-                                },
-                                {
-                                    "label": "ECG heart rate",
-                                    "value": "ecg-bpm",
-                                },
-                                {
-                                    "label": "Optical heart rate",
-                                    "value": "optical-bpm"
-                                },
-                                {
-                                    "label": "SpO₂",
-                                    "value": "spo2"
-                                },
-                                {
-                                    "label": "Object temperature",
-                                    "value": "temp-object"
-                                },
-                                {
-                                    "label": "Ambient temperature",
-                                    "value": "temp-ambient"
-                                },
-                                {
-                                    "label": "Temperature comparison",
-                                    "value": "temperature"
-                                },
-                                {
-                                    "label": "Events",
-                                    "value": "events"
-                                },
-                            ],
-                            value=DEFAULT_VISIBLE_PANELS,
-                            inline=True,
-                            className="panel-selector",
-                            persistence=True,
-                            persistence_type="local"
                         ),
                     ]
                 ),
                 html.Main(
                     children=[
-                        html.Section(className="metric-grid", children=[
-                                _metric_card(title="ECG BPM", value_id="metric-bpm"),
-                                _metric_card(title="Optical BPM", value_id="metric-max-bpm"),
-                                _metric_card(title="Skin conductance", value_id="metric-gsr"),
-                                _metric_card(title="SpO₂", value_id="metric-spo2"),
-                                _metric_card(title="Object temperature", value_id="metric-temp"),
-                                _metric_card(title="Ambient temperature", value_id="metric-temp-ambient"),
-                                _metric_card(title="Supply voltage", value_id="metric-battery"),
-                            ]
-                        ),
                         html.Section(
-                            className="sensor-status-grid",
+                            className="sensor-overview-grid",
                             children=[
-                                _sensor_status_card(title="ECG", value_id="sensor-ecg-status"),
-                                _sensor_status_card(title="GSR", value_id="sensor-gsr-status"),
-                                _sensor_status_card(title="Pulse oximeter", value_id="sensor-pulse-status"),
+                                _sensor_overview_card(
+                                    title="ECG",
+                                    status_id="sensor-ecg-status",
+                                    values=(
+                                        ("Heart rate", "metric-bpm"),
+                                    ),
+                                ),
+                                _sensor_overview_card(
+                                    title="GSR",
+                                    status_id="sensor-gsr-status",
+                                    values=(
+                                        ("Conductance", "metric-gsr"),
+                                    ),
+                                ),
+                                _sensor_overview_card(
+                                    title="Pulse oximeter",
+                                    status_id="sensor-pulse-status",
+                                    values=(
+                                        ("Heart rate", "metric-max-bpm"),
+                                        ("SpO₂", "metric-spo2")
+                                    )
+                                ),
+                                _sensor_overview_card(
+                                    title="Object temperature",
+                                    status_id=None,
+                                    values=(
+                                        ("Temperature", "metric-temp"),
+                                    )
+                                ),
+                                _sensor_overview_card(
+                                    title="Ambient temperature",
+                                    status_id=None,
+                                    values=(
+                                        ("Temperature", "metric-temp-ambient"),
+                                    )
+                                ),
                             ]
                         ),
                         html.Section(id="ecg-panel", className="panel ecg-panel", children=[
@@ -396,7 +455,7 @@ def _build_layout(live_store: LiveTelemetryStore,) -> html.Div:
         )
 
 
-def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
+def _register_callbacks(app: Dash, live_store: LiveTelemetryStore, session_store: LiveSessionStore) -> None:
     @app.callback(
         Output("ecg-graph", "figure"),
         Output("gsr-graph", "figure"),
@@ -408,8 +467,9 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
         Output("temperature-graph", "figure"),
         Output("device-status", "children"),
         Output("device-status", "className"),
-        Output("session-status", "children"),
-        Output("session-status", "className"),
+        Output("battery-percent", "children"),
+        Output("battery-voltage", "children"),
+        Output("battery-fill", "style"),
         Output("sensor-ecg-status", "children"),
         Output("sensor-ecg-status", "className"),
         Output("sensor-gsr-status", "children"),
@@ -423,7 +483,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
         Output("metric-spo2", "children"),
         Output("metric-temp", "children"),
         Output("metric-temp-ambient", "children"),
-        Output("metric-battery", "children"),
         Output("event-list", "children"),
         Input("dashboard-refresh", "n_intervals"),
         Input("ecg-signal-kind", "value"),
@@ -482,8 +541,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
 
         device_text, device_class = device_status(snapshot)
 
-        session_text, session_class = session_status(snapshot)
-
         ecg_status_text, ecg_status_class = ecg_sensor_status(snapshot)
 
         gsr_status_text, gsr_status_class = gsr_sensor_status(snapshot)
@@ -491,6 +548,28 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
         pulse_status_text, pulse_status_class = pulse_sensor_status(snapshot)
 
         metrics = snapshot.metrics
+        
+        if metrics is None:
+            battery_percent = "-"
+            battery_voltage = "-"
+            battery_fill = {"width": "0%"}
+        elif health.device_state is LiveDeviceState.OFFLINE:
+            battery_percent = "OFFLINE"
+            battery_voltage = "-"
+            battery_fill = {"width": "0%"}
+            
+            percent = max(0, min(100, metrics.batt_percent))
+            battery_fill = {"width": f"{percent}%"}
+        elif health.metrics_stale:
+            percent = max(0, min(100, metrics.batt_percent))
+            battery_percent = "STALE"
+            battery_voltage = f"{metrics.batt_v:.2f} V"
+            battery_fill = {"width": f"{percent}%"}
+        else:
+            percent = max(0, min(100, metrics.batt_percent))
+            battery_percent = f"{percent}%"
+            battery_voltage = f"{metrics.batt_v:.2f} V"
+            battery_fill = {"width": f"{percent}%"}
 
         if metrics is None:
             bpm = "-"
@@ -499,7 +578,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             spo2 = "-"
             temperature = "-"
             ambient_temperature = "-"
-            supply_voltage = "-"
         elif (health.device_state is LiveDeviceState.OFFLINE):
             bpm = "OFFLINE"
             max_bpm = "OFFLINE"
@@ -507,7 +585,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             spo2 = "OFFLINE"
             temperature = "OFFLINE"
             ambient_temperature = "OFFLINE"
-            supply_voltage = "OFFLINE"
         elif health.metrics_stale:
             bpm = "STALE"
             max_bpm = "STALE"
@@ -515,7 +592,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             spo2 = "STALE"
             temperature = "STALE"
             ambient_temperature = "STALE"
-            supply_voltage = "STALE"
         else:
             bpm = (format_optional_number(metrics.ecg_bpm, suffix=" bpm") if (not metrics.leads_off and metrics.ecg_bpm > 0) else "-")
             max_bpm = (format_optional_number(metrics.max_bpm, suffix=" bpm") if (metrics.max_finger and metrics.max_bpm > 0) else "-")
@@ -523,7 +599,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             spo2 = (format_optional_number(metrics.spo2, suffix=" %", precision=1) if metrics.spo2_valid else "-")
             temperature = format_optional_number(metrics.temp_obj, suffix=" °C", precision=1)
             ambient_temperature = format_optional_number(metrics.temp_amb, suffix=" °C", precision=1)
-            supply_voltage = (f"{metrics.batt_v:.2f} V")
 
         ecg_is_stale = (bool(snapshot.ecg_samples) and health.ecg_stale or health.device_state is LiveDeviceState.OFFLINE)
 
@@ -542,8 +617,9 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             build_temperature_figure(snapshot, is_stale=metrics_are_stale, window_s=temperature_win_s),
             device_text,
             device_class,
-            session_text,
-            session_class,
+            battery_percent,
+            battery_voltage,
+            battery_fill,
             ecg_status_text,
             ecg_status_class,
             gsr_status_text,
@@ -557,7 +633,6 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
             spo2,
             temperature,
             ambient_temperature,
-            supply_voltage,
             _event_children(format_event_rows(snapshot))
         )
     
@@ -654,6 +729,34 @@ def _register_callbacks(app: Dash, live_store: LiveTelemetryStore) -> None:
         value = max(min_val, min(max_val, input_val))
         
         return value, value
+    
+    @app.callback(
+        Output("session-status", "children"),
+        Output("session-status", "className"),
+        Output("session-summary", "className"),
+        Output("session-duration", "children"),
+        Output("session-started", "children"),
+        Output("session-last-result", "children"),
+        Output("session-last-result", "className"),
+        Output("session-last-result-item", "style"),
+        Input("dashboard-refresh", "n_intervals")  
+    )
+    def refresh_session(_n_intervals: int) -> tuple[object, ...]:
+        snapshot = session_store.snapshot()
+        
+        state_text, state_class = live_session_status(snapshot)
+        result_text, result_class = live_session_result(snapshot)
+        
+        return (
+            state_text,
+            state_class,
+            _session_summary_class(snapshot),
+            format_session_duration(snapshot),
+            format_session_started(snapshot),
+            result_text,
+            result_class,
+            _last_session_item_style(snapshot),
+        )
             
 def _update_trend_order(selected_panels: list[str] | None, stored_order: list[str] | None) -> list[str]:
     selected = set(selected_panels or [])
@@ -727,6 +830,89 @@ def _metric_card(title: str, value_id: str,) -> html.Div:
                 className="metric-value",
             )
         ]
+    )
+    
+def _sensor_overview_card(*, title: str, status_id: str | None, values: tuple[tuple[str, str], ...]) -> html.Div:
+    header_children: list[object] = [
+        html.Span(title, className="sensor-overview-title")
+    ]
+    
+    if status_id is not None:
+        header_children.append(
+            html.Span(
+                "NO DATA",
+                id=status_id,
+                className=("status-badge status-unknown")
+            )
+        )
+        
+    return html.Div(
+        className="sensor-overview-card",
+        children=[
+            html.Div(
+                className="sensor-overview-header",
+                children=header_children,
+            ),
+            html.Div(
+                className="sensor-overview-values",
+                children=[
+                    html.Div(
+                        className="sensor-overview-metric",
+                        children=[
+                            html.Span(
+                                label,
+                                className="sensor-overview-metric-label"
+                            ),
+                            html.Strong(
+                                "-",
+                                id=value_id,
+                                className="sensor-overview-value"
+                            )
+                        ]
+                    )
+                    for label, value_id in values
+                ]
+            )
+        ]
+    )
+    
+def _session_summary_class(snapshot: live_session_snapshot) -> str:
+    if snapshot.state in (LiveSessionState.ACTIVE, LiveSessionState.FINALIZING):
+        return "session-summary session-summary-current"
+    
+    if snapshot.last_integrity_complete is not None:
+        return "session-summary session-summary-last"
+    
+    return "session-summary session-summary-hidden"
+
+def _last_session_item_style(snapshot: live_session_snapshot) -> dict[str, str]:
+    if snapshot.state is LiveSessionState.INACTIVE and snapshot.last_integrity_complete is not None:
+        return {}
+    
+    return {"display": "none"}
+    
+def _session_summary_item(*, label: str, value_id: str, value: str, value_class: str = "session-summary-value", item_id: str | None = None, style: dict[str, str] | None = None) -> html.Div:
+    props: dict[str, object] = {
+        "className": "session-summary-item",
+        "style": style,
+    }
+    
+    if item_id is not None:
+        props["id"] = item_id
+    
+    return html.Div(
+        children=[
+            html.Span(
+                label,
+                className="status-label",
+            ),
+            html.Strong(
+                value,
+                id=value_id,
+                className=value_class
+            ),
+        ],
+        **props,
     )
 
 def _sensor_status_card(title: str, value_id: str) -> html.Div:
@@ -931,3 +1117,39 @@ def _event_children(rows: list[dict[str, str]]) -> list[html.Div]:
         )
         for row in rows
     ]
+    
+def _battery_status() -> html.Div:
+    return html.Div(
+        className="battery-status",
+        children=[
+            html.Span(
+                "Battery",
+                className="status-label",
+            ),
+            html.Div(
+                className="battery-value-row",
+                children=[
+                    html.Strong(
+                        "-",
+                        id="battery-percent",
+                        className="battery-percent",
+                    ),
+                    html.Span(
+                        "-",
+                        id="battery-voltage",
+                        className="battery-voltage"
+                    )
+                ]
+            ),
+            html.Div(
+                className="battery-track",
+                children=[
+                    html.Div(
+                        id="battery-fill",
+                        className="battery-fill",
+                        style={"width": "0%"}
+                    )
+                ]
+            )
+        ]
+    )

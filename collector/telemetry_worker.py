@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from collector.csv_writer import SessionCsvWriter
 from collector.live_store import LiveTelemetryStore
+from collector.live_session_store import LiveSessionStore
 from collector.session_manager import SessionAction, SessionInfo, SessionManager
 from shared.models import telemetry_message, ecg_batch_message, gsr_batch_message, event_message
 from shared.protocol import UI_EVENT_MARKER
@@ -27,8 +28,9 @@ class TelemetryWorker:
         data_root: Path,
         device_id: str,
         live_store: LiveTelemetryStore,
+        session_store: LiveSessionStore,
         queue_poll_timeout_s: float = 0.25,
-        session_close_timeout_s: float = 2.0
+        session_close_timeout_s: float = 2.0,
     ) -> None:
         if queue_poll_timeout_s <= 0:
             raise ValueError("queue_poll_timeout_s must be greater than zero")
@@ -38,6 +40,7 @@ class TelemetryWorker:
 
         self._input_queue = input_queue
         self._live_store = live_store
+        self._session_store = session_store
         self._session_manager = SessionManager(data_root=data_root, device_id=device_id)
         self._queue_poll_timeout_s = queue_poll_timeout_s
         self._writer: SessionCsvWriter | None = None
@@ -258,6 +261,8 @@ class TelemetryWorker:
                     )
                 )
             )
+            
+            self._session_store.begin_finalizing(stopped_at_utc=message.received_at_utc)
 
             LOGGER.info(
                 f"Measurement session waiting for trailing telemetry: session={writer.session.session_id}, stop_sample={stop_sample}, timeout={self._session_close_timeout_s}"
@@ -291,6 +296,8 @@ class TelemetryWorker:
 
         writer.open()
         self._writer = writer
+        
+        self._session_store.start(session.started_at_utc)
 
         LOGGER.info(f"Measurement session started {session.session_id}")
 
@@ -309,9 +316,13 @@ class TelemetryWorker:
         ecg_integrity = writer.ecg_integrity
         gsr_integrity = writer.gsr_integrity
 
+        integrity_complete = False
+        
         try:
             writer.close(stop_sample=stop_sample)
+            integrity_complete = writer.session_integrity_complete
         finally:
+            self._session_store.finish(integrity_complete=integrity_complete)
             self._writer = None
             self._pending_close = None
 

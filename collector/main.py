@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from collector.live_store import LiveTelemetryStore
+from collector.live_session_store import LiveSessionStore
 from collector.mqtt_client import MqttTelemetryClient
 from collector.telemetry_worker import TelemetryWorker
 from dashboard.app import create_dashboard_app
@@ -51,17 +52,20 @@ def run() -> None:
         event_limit=LIVE_EVENT_LIMIT,
         metrics_window_s=LIVE_METRICS_WINDOW_S
     )
+    
+    session_store = LiveSessionStore()
 
     worker = TelemetryWorker(
         input_queue=telemetry_queue,
         data_root=DATA_ROOT,
         device_id=cfg.device_id,
         live_store=live_store,
+        session_store=session_store,
     )
 
     mqtt_client = MqttTelemetryClient(config=cfg, output_queue=telemetry_queue)
 
-    dashboard_app = create_dashboard_app(live_store=live_store)
+    dashboard_app = create_dashboard_app(live_store=live_store, session_store=session_store)
 
     dashboard_server = DashboardServer(app=dashboard_app, host=DASHBOARD_HOST, port=DASHBOARD_PORT)
 

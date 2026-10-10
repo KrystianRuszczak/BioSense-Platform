@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from collector.live_store import live_telemetry_snapshot
+from collector.live_session_store import LiveSessionState, live_session_snapshot
 from collector.live_health import LiveDeviceState, evaluate_live_health
 from shared.protocol import UiFlag, UI_EVENT_MARKER
 
@@ -15,6 +16,57 @@ EVENT_NAMES = {
 }
 
 SensorStatus = tuple[str, str]
+
+def live_session_status(snapshot: live_session_snapshot, ) -> tuple[str, str]:
+    if snapshot.state is LiveSessionState.ACTIVE:
+        return ("ACTIVE", "status-badge session-active")
+    
+    if snapshot.state is LiveSessionState.FINALIZING:
+        return ("FINALIZING", "status-badge session-finalizing")
+    
+    return ("INACTIVE", "status-badge session-inactive")
+
+def format_session_duration(snapshot: live_session_snapshot) -> str:
+    duration_s: float | None
+    
+    if snapshot.state is LiveSessionState.ACTIVE:
+        if snapshot.started_at_utc is None:
+            return "-"
+        
+        duration_s = (snapshot.generated_at_utc - snapshot.started_at_utc).total_seconds()
+    elif snapshot.state is LiveSessionState.FINALIZING:
+        if snapshot.started_at_utc is None or snapshot.stopped_at_utc is None:
+            return "-"
+        
+        duration_s = (snapshot.stopped_at_utc - snapshot.started_at_utc).total_seconds()
+    else:
+        duration_s = snapshot.last_duration_s
+        
+    if duration_s is None:
+        return "-"
+    
+    total_seconds = max(0, int(duration_s))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    return (f"{hours:02d}:{minutes:02d}:{seconds:02d}")
+
+def format_session_started(snapshot: live_session_snapshot) -> str:
+    if snapshot.started_at_utc is None:
+        return "-"
+    
+    return snapshot.started_at_utc.astimezone().strftime("%d.%m.%Y, %H:%M:%S")
+
+def live_session_result(snapshot: live_session_snapshot) -> tuple[str, str]:
+    result = snapshot.last_integrity_complete
+    
+    if result is None:
+        return ("-", "status-badge status unknown")
+    
+    if result:
+        return ("COMPLETE", "status-badge status-complete")
+    
+    return ("INCOMPLETE", "status-badge session-incomplete")
 
 def format_optional_number(value: int | float | None, suffix: str = "", precision: int = 0,) -> str:
     if value is None:
