@@ -1,7 +1,5 @@
 # Biosense-Platform
 
-# BioSense Platform
-
 BioSense Platform collects biomedical telemetry from a BioSense device over MQTT. It provides a live dashboard and saves measurement sessions locally.
 
 ## Features
